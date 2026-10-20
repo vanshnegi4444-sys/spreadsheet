@@ -1,6 +1,7 @@
 # Build directories
 build/
 bin/
+build_ninja/
 cpp/build/
 *.exe
 *.o
@@ -12,6 +13,9 @@ cpp/build/
 compile_commands.json
 .ninja_*
 .cache/
+imgui.ini
+spreadsheet.json
+
 
 # IDE files
 .vscode/
