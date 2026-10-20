@@ -1,4 +1,25 @@
-node_modules
-yarn.lock
+# Build directories
+build/
+bin/
+cpp/build/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.pdb
+compile_commands.json
+.ninja_*
+.cache/
 
-.nyc_output/*
+# IDE files
+.vscode/
+.vs/
+.idea/
+*.user
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
