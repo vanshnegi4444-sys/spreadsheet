@@ -12,8 +12,32 @@ SheetData::SheetData(const std::string& n) : name(n), selector(0, 0, 0, 0) {
     styles.push_back(Style());
 }
 
+SheetSnapshot SheetData::createSnapshot() const {
+    SheetSnapshot snap;
+    snap.name = name;
+    snap.freeze = freeze;
+    snap.styles = styles;
+    snap.merges = merges;
+    snap.rows = rows;
+    snap.cols = cols;
+    snap.validations = validations;
+    snap.autoFilter = autoFilter;
+    return snap;
+}
+
+void SheetData::restoreSnapshot(const SheetSnapshot& snap) {
+    name = snap.name;
+    freeze = snap.freeze;
+    styles = snap.styles;
+    merges = snap.merges;
+    rows = snap.rows;
+    cols = snap.cols;
+    validations = snap.validations;
+    autoFilter = snap.autoFilter;
+}
+
 void SheetData::pushHistoryState() {
-    history.add(toJson());
+    history.add(createSnapshot());
 }
 
 int SheetData::addStyle(const Style& s) {
@@ -204,13 +228,19 @@ void SheetData::setSelectedCellBorder(const BorderStyle& borderStyle, const std:
     }
 
     selector.each([&](int ri, int ci) {
-        Cell& cell = rows.getCellOrNew(ri, ci);
-        Style s = getCellStyle(ri, ci);
-
         bool isTop = (ri == selector.sri);
         bool isBottom = (ri == selector.eri);
         bool isLeft = (ci == selector.sci);
         bool isRight = (ci == selector.eci);
+
+        if (mode == "outside" && !isTop && !isBottom && !isLeft && !isRight) return;
+        if (mode == "top" && !isTop) return;
+        if (mode == "bottom" && !isBottom) return;
+        if (mode == "left" && !isLeft) return;
+        if (mode == "right" && !isRight) return;
+
+        Cell& cell = rows.getCellOrNew(ri, ci);
+        Style s = getCellStyle(ri, ci);
 
         if (mode == "all") {
             s.border.top = borderStyle;
@@ -515,18 +545,18 @@ int SheetData::mapLogicalToVisualRow(int logicalRi) const {
 }
 
 void SheetData::undo() {
-    nlohmann::json current = toJson();
-    nlohmann::json prev;
+    SheetSnapshot current = createSnapshot();
+    SheetSnapshot prev;
     if (history.undo(current, prev)) {
-        fromJson(prev);
+        restoreSnapshot(prev);
     }
 }
 
 void SheetData::redo() {
-    nlohmann::json current = toJson();
-    nlohmann::json next;
+    SheetSnapshot current = createSnapshot();
+    SheetSnapshot next;
     if (history.redo(current, next)) {
-        fromJson(next);
+        restoreSnapshot(next);
     }
 }
 

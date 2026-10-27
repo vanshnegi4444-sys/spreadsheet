@@ -93,7 +93,11 @@ public:
     DialogPrint dialogPrint;
 
     // File dialogs
-    char currentFilePathBuf[256] = "spreadsheet.json";
+    char currentFilePathBuf[256] = "workbook.sheet";
+
+    // Cached grid layout geometry vectors to avoid 60 FPS heap allocations
+    std::vector<float> cachedColX;
+    std::vector<float> cachedRowY;
 
     // Hybrid rendering state (Method 2: 60 FPS on scroll, event-driven on cell edit, 0 FPS on idle)
     float scrollActivityTimer = 0.5f;

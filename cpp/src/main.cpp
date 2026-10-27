@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
 
     xspreadsheet::SpreadsheetUI app;
 
-    // If a JSON file is passed as command line argument, load it
+    // If a workbook file is passed as command line argument, load it
     if (argc > 1) {
         app.book.loadFromFile(argv[1]);
     }

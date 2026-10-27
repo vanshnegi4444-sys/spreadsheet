@@ -308,7 +308,7 @@ void SpreadsheetUI::renderRibbonTabs() {
     if (ImGui::BeginPopup("OpenFilePopup")) {
         ImGui::Text("Enter file path:");
         ImGui::InputText("##OpenFilePath", currentFilePathBuf, sizeof(currentFilePathBuf));
-        if (ImGui::Button("Load JSON", ImVec2(100, 0))) {
+        if (ImGui::Button("Open Workbook", ImVec2(120, 0))) {
             book.loadFromFile(currentFilePathBuf);
             ImGui::CloseCurrentPopup();
         }
@@ -322,7 +322,7 @@ void SpreadsheetUI::renderRibbonTabs() {
     if (ImGui::BeginPopup("SaveAsPopup")) {
         ImGui::Text("Save to file path:");
         ImGui::InputText("##SaveFilePath", currentFilePathBuf, sizeof(currentFilePathBuf));
-        if (ImGui::Button("Save JSON", ImVec2(100, 0))) {
+        if (ImGui::Button("Save Workbook", ImVec2(120, 0))) {
             book.saveToFile(currentFilePathBuf);
             ImGui::CloseCurrentPopup();
         }
@@ -1326,8 +1326,9 @@ void SpreadsheetUI::renderGridCanvas() {
         }
     }
 
-    // Column positions calculation
-    std::vector<float> colX(sheet->cols.len + 1);
+    // Column positions calculation (reusing cached buffer to avoid per-frame heap allocations)
+    cachedColX.resize(sheet->cols.len + 1);
+    auto& colX = cachedColX;
     float curX = origin.x + headerColW;
     for (int c = 0; c < sheet->cols.len; ++c) {
         colX[c] = curX;
@@ -1341,8 +1342,9 @@ void SpreadsheetUI::renderGridCanvas() {
         colX[c] -= scrollX;
     }
 
-    // Row positions calculation
-    std::vector<float> rowY(sheet->rows.len + 1);
+    // Row positions calculation (reusing cached buffer to avoid per-frame heap allocations)
+    cachedRowY.resize(sheet->rows.len + 1);
+    auto& rowY = cachedRowY;
     float curY = origin.y + headerRowH;
     for (int r = 0; r < sheet->rows.len; ++r) {
         rowY[r] = curY;

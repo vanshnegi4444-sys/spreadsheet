@@ -183,6 +183,23 @@ void testHistory() {
     sheet.fromJson(nextSnap);
     assert(sheet.getCellText(0, 0) == "Modified 1");
 
+    // Test native zero-JSON SheetData undo/redo
+    SheetData nativeSheet("native_test");
+    nativeSheet.setCellText(0, 0, "Step 1", true);
+    nativeSheet.setCellText(0, 0, "Step 2", true);
+    assert(nativeSheet.canUndo());
+    nativeSheet.undo();
+    assert(nativeSheet.getCellText(0, 0) == "Step 1");
+    assert(nativeSheet.canRedo());
+    nativeSheet.redo();
+    assert(nativeSheet.getCellText(0, 0) == "Step 2");
+
+    // Test cell memory pruning
+    nativeSheet.setCellText(5, 5, "temporary", false);
+    assert(nativeSheet.rows.data.find(5) != nativeSheet.rows.data.end());
+    nativeSheet.setCellText(5, 5, "", false);
+    assert(nativeSheet.rows.data.find(5) == nativeSheet.rows.data.end()); // row purged!
+
     std::cout << "testHistory() PASSED" << std::endl;
 }
 
@@ -230,8 +247,8 @@ void testBookAndCSV() {
     assert(csv.find("Name,Age") != std::string::npos);
     assert(csv.find("Alice,30") != std::string::npos);
 
-    // Save and load JSON
-    std::string tempPath = "test_workbook.json";
+    // Save and load Workbook
+    std::string tempPath = "test_workbook.sheet";
     assert(book.saveToFile(tempPath));
 
     SpreadsheetBook loaded;

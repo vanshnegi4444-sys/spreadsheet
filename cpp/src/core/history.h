@@ -1,17 +1,19 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <utility>
 #include <nlohmann/json.hpp>
 
 namespace xspreadsheet {
 
-class History {
+template <typename T = nlohmann::json>
+class HistoryT {
 public:
-    std::vector<nlohmann::json> undoItems;
-    std::vector<nlohmann::json> redoItems;
-    size_t maxHistory = 100;
+    std::vector<T> undoItems;
+    std::vector<T> redoItems;
+    size_t maxHistory = 50;
 
-    void add(const nlohmann::json& state) {
+    void add(const T& state) {
         undoItems.push_back(state);
         if (undoItems.size() > maxHistory) {
             undoItems.erase(undoItems.begin());
@@ -22,18 +24,18 @@ public:
     bool canUndo() const { return !undoItems.empty(); }
     bool canRedo() const { return !redoItems.empty(); }
 
-    bool undo(const nlohmann::json& current, nlohmann::json& outPrevious) {
+    bool undo(const T& current, T& outPrevious) {
         if (!canUndo()) return false;
         redoItems.push_back(current);
-        outPrevious = undoItems.back();
+        outPrevious = std::move(undoItems.back());
         undoItems.pop_back();
         return true;
     }
 
-    bool redo(const nlohmann::json& current, nlohmann::json& outNext) {
+    bool redo(const T& current, T& outNext) {
         if (!canRedo()) return false;
         undoItems.push_back(current);
-        outNext = redoItems.back();
+        outNext = std::move(redoItems.back());
         redoItems.pop_back();
         return true;
     }
@@ -43,5 +45,7 @@ public:
         redoItems.clear();
     }
 };
+
+using History = HistoryT<nlohmann::json>;
 
 } // namespace xspreadsheet

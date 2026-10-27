@@ -16,6 +16,17 @@
 
 namespace xspreadsheet {
 
+struct SheetSnapshot {
+    std::string name;
+    std::pair<int, int> freeze = {0, 0};
+    std::vector<Style> styles;
+    Merges merges;
+    Rows rows;
+    Cols cols;
+    Validations validations;
+    AutoFilter autoFilter;
+};
+
 class SheetData {
 public:
     std::string name = "sheet1";
@@ -26,7 +37,7 @@ public:
     Cols cols;
     Validations validations;
     AutoFilter autoFilter;
-    History history;
+    HistoryT<SheetSnapshot> history;
 
     // Selection state
     int select_ri = 0;
@@ -93,6 +104,10 @@ public:
 
     nlohmann::json toJson() const;
     void fromJson(const nlohmann::json& j);
+
+    // Native snapshots for zero-allocation undo/redo
+    SheetSnapshot createSnapshot() const;
+    void restoreSnapshot(const SheetSnapshot& snap);
 
     // Snapshot current state for undo
     void pushHistoryState();

@@ -118,6 +118,28 @@ void Rows::setCell(int ri, int ci, const Cell& cell, const std::string& what) {
 }
 
 void Rows::setCellText(int ri, int ci, const std::string& text) {
+    if (text.empty()) {
+        auto it = data.find(ri);
+        if (it != data.end()) {
+            auto cit = it->second.cells.find(ci);
+            if (cit != it->second.cells.end() && cit->second.editable) {
+                if (cit->second.style < 0 && cit->second.merge.first == 0 && cit->second.merge.second == 0) {
+                    it->second.cells.erase(cit);
+                    if (it->second.cells.empty() && !it->second.customHeight && !it->second.hide && it->second.style < 0) {
+                        data.erase(it);
+                    }
+                    return;
+                }
+                cit->second.text.clear();
+                cit->second.value.clear();
+                cit->second.evaluatedValue.clear();
+                cit->second.isDirty = false;
+                return;
+            }
+        }
+        return; // Empty string on non-existent cell: do not allocate unnecessary heap memory
+    }
+
     Cell& cell = getCellOrNew(ri, ci);
     if (cell.editable) {
         cell.text = text;
@@ -139,11 +161,27 @@ void Rows::deleteCell(int ri, int ci, const std::string& what) {
     } else if (what == "text") {
         cit->second.text.clear();
         cit->second.value.clear();
+        cit->second.evaluatedValue.clear();
+        cit->second.isDirty = false;
+        if (cit->second.style < 0 && cit->second.merge.first == 0 && cit->second.merge.second == 0) {
+            it->second.cells.erase(cit);
+        }
     } else if (what == "format") {
         cit->second.style = -1;
         cit->second.merge = {0, 0};
+        if (cit->second.text.empty() && cit->second.value.empty()) {
+            it->second.cells.erase(cit);
+        }
     } else if (what == "merge") {
         cit->second.merge = {0, 0};
+        if (cit->second.text.empty() && cit->second.value.empty() && cit->second.style < 0) {
+            it->second.cells.erase(cit);
+        }
+    }
+
+    // Free empty row memory
+    if (it->second.cells.empty() && !it->second.customHeight && !it->second.hide && it->second.style < 0) {
+        data.erase(it);
     }
 }
 
