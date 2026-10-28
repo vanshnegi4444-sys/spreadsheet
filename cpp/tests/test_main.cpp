@@ -99,7 +99,7 @@ void testFormula() {
     cells[{2, 0}] = "=D1"; // C1 = D1
     cells[{3, 0}] = "=C1"; // D1 = C1
     std::string cycleRes = FormulaEngine::eval("=C1", lookup);
-    assert(cycleRes == "#REF!");
+    assert(cycleRes == "#CIRC!");
 
     std::cout << "testFormula() PASSED" << std::endl;
 }
@@ -311,6 +311,189 @@ void testPerformanceAndPrecision() {
     std::cout << "testPerformanceAndPrecision() PASSED" << std::endl;
 }
 
+void testFormulaPrecision() {
+    std::cout << "Running testFormulaPrecision()..." << std::endl;
+    auto lookup = [](int x, int y) -> std::string { return ""; };
+
+    // 15 significant digits, like Excel (the old code kept 12)
+    assert(FormulaEngine::eval("=1/3", lookup) == "0.333333333333333");
+    assert(FormulaEngine::eval("=2/3", lookup) == "0.666666666666667");
+    assert(FormulaEngine::eval("=0.1+0.2", lookup) == "0.3");
+    assert(FormulaEngine::eval("=1/2", lookup) == "0.5");
+    assert(FormulaEngine::eval("=1000*2.5", lookup) == "2500");
+
+    // Scientific notation in formulas
+    assert(FormulaEngine::eval("=1e5", lookup) == "100000");
+    assert(FormulaEngine::eval("=1E-3", lookup) == "0.001");
+    assert(FormulaEngine::eval("=2.5e2", lookup) == "250");
+    assert(FormulaEngine::eval("=1e5+1", lookup) == "100001");
+    assert(FormulaEngine::eval("=-1.5e-3", lookup) == "-0.0015");
+
+    // Chained rounding: A1 holds 1/3, B1 = A1*3. The error no longer grows
+    // the way it did at 12 digits (old result: 0.999999999999). It is still
+    // not exactly 1, because the value travels between steps as a rounded
+    // string; getting exactly 1 needs the Value-type change (see
+    // CHANGES.md, "deliberately not done").
+    std::map<std::pair<int, int>, std::string> cells;
+    cells[{0, 0}] = "=1/3"; // A1
+    auto lookup2 = [&](int x, int y) -> std::string {
+        auto it = cells.find({x, y});
+        return it != cells.end() ? it->second : "";
+    };
+    assert(FormulaEngine::eval("=A1*3", lookup2) == "0.999999999999999");
+
+    std::cout << "testFormulaPrecision() PASSED" << std::endl;
+}
+
+void testFormulaErrors() {
+    std::cout << "Running testFormulaErrors()..." << std::endl;
+    std::map<std::pair<int, int>, std::string> cells;
+    auto lookup = [&](int x, int y) -> std::string {
+        auto it = cells.find({x, y});
+        return it != cells.end() ? it->second : "";
+    };
+
+    // A cell referring to itself is a cycle, not a deleted reference
+    cells[{0, 0}] = "=A1+1"; // A1
+    assert(FormulaEngine::eval("=A1", lookup) == "#CIRC!");
+    // Mutual cycle
+    cells[{2, 0}] = "=D1"; // C1
+    cells[{3, 0}] = "=C1"; // D1
+    assert(FormulaEngine::eval("=C1", lookup) == "#CIRC!");
+
+    // Text in arithmetic is #VALUE! (Excel), not silent 0 or joining
+    assert(FormulaEngine::eval("=\"abc\"-1", lookup) == "#VALUE!");
+    assert(FormulaEngine::eval("=\"abc\"*2", lookup) == "#VALUE!");
+    assert(FormulaEngine::eval("=\"abc\"+1", lookup) == "#VALUE!");
+    assert(FormulaEngine::eval("=\"abc\"/1", lookup) == "#VALUE!");
+    assert(FormulaEngine::eval("=\"abc\"/\"def\"", lookup) == "#VALUE!");
+    assert(FormulaEngine::eval("=-\"abc\"", lookup) == "#VALUE!");
+
+    // Real division by zero still says so
+    assert(FormulaEngine::eval("=1/0", lookup) == "#DIV/0!");
+
+    // Errors pass through instead of being hidden by later steps
+    cells[{0, 1}] = "=1/0"; // A2
+    assert(FormulaEngine::eval("=A2+1", lookup) == "#DIV/0!");
+    assert(FormulaEngine::eval("=A2*5", lookup) == "#DIV/0!");
+
+    std::cout << "testFormulaErrors() PASSED" << std::endl;
+}
+
+void testSortPreParsed() {
+    std::cout << "Running testSortPreParsed()..." << std::endl;
+    SheetData sheet("sort_sheet");
+    sheet.setCellText(0, 0, "Item", false);
+    sheet.setCellText(0, 1, "Amount", false);
+    sheet.setCellText(1, 0, "A", false);
+    sheet.setCellText(1, 1, "100", false);
+    sheet.setCellText(2, 0, "B", false);
+    sheet.setCellText(2, 1, "20", false);
+    sheet.setCellText(3, 0, "C", false);
+    sheet.setCellText(3, 1, "3", false);
+    sheet.setCellText(4, 0, "D", false);
+    sheet.setCellText(4, 1, "1000", false);
+
+    sheet.selector.set(0, 0, 4, 1);
+    sheet.autofilterToggle();
+    sheet.autoFilter.setSort(1, "asc");
+    sheet.resetAutoFilter();
+
+    // Numeric order, not alphabetical: 3, 20, 100, 1000
+    assert(sheet.mapVisualToLogicalRow(1) == 3);
+    assert(sheet.mapVisualToLogicalRow(2) == 2);
+    assert(sheet.mapVisualToLogicalRow(3) == 1);
+    assert(sheet.mapVisualToLogicalRow(4) == 4);
+
+    // Descending
+    sheet.autoFilter.setSort(1, "desc");
+    sheet.resetAutoFilter();
+    assert(sheet.mapVisualToLogicalRow(1) == 4);
+    assert(sheet.mapVisualToLogicalRow(2) == 1);
+    assert(sheet.mapVisualToLogicalRow(3) == 2);
+    assert(sheet.mapVisualToLogicalRow(4) == 3);
+
+    std::cout << "testSortPreParsed() PASSED" << std::endl;
+}
+
+void testCsvSafety() {
+    std::cout << "Running testCsvSafety()..." << std::endl;
+    SpreadsheetBook book;
+    auto s = book.sheets[0];
+    s->setCellText(0, 0, "=2+5", false);
+    s->setCellText(0, 1, "+cmd", false);
+    s->setCellText(0, 2, "-x", false);
+    s->setCellText(0, 3, "@x", false);
+    s->setCellText(0, 4, "plain", false);
+    std::string csv = book.exportCsv(0);
+    // Dangerous leading characters are neutralised with a leading quote
+    assert(csv.find("'=2+5") != std::string::npos);
+    assert(csv.find("'+cmd") != std::string::npos);
+    assert(csv.find("'-x") != std::string::npos);
+    assert(csv.find("'@x") != std::string::npos);
+    // Plain text is untouched
+    assert(csv.find(",plain") != std::string::npos);
+
+    // A UTF-8 BOM on import is stripped, not stored inside cell A1
+    SpreadsheetBook book2;
+    std::string bomCsv = "\xEF\xBB\xBFName,Age\r\nAlice,30\r\n";
+    assert(book2.importCsv(bomCsv, 0));
+    assert(book2.sheets[0]->getCellText(0, 0) == "Name");
+    assert(book2.sheets[0]->getCellText(1, 0) == "Alice");
+
+    // Import grows the grid past the default 1000 rows
+    SpreadsheetBook book3;
+    std::string big;
+    for (int i = 0; i < 1500; ++i) {
+        big += "r" + std::to_string(i) + ",1\r\n";
+    }
+    assert(book3.importCsv(big, 0));
+    assert(book3.sheets[0]->rows.len > 1000);
+    assert(book3.sheets[0]->getCellText(1499, 0) == "r1499");
+
+    std::cout << "testCsvSafety() PASSED" << std::endl;
+}
+
+void testAtomicSaveAndLoadErrors() {
+    std::cout << "Running testAtomicSaveAndLoadErrors()..." << std::endl;
+    SpreadsheetBook book;
+    book.sheets[0]->setCellText(0, 0, "Hello", false);
+    std::string path = "test_atomic.sheet";
+    std::string tmpPath = path + ".tmp";
+    std::remove(tmpPath.c_str());
+    assert(book.saveToFile(path));
+    // No temp file left behind, and the saved file loads back fine
+    std::ifstream probe(tmpPath);
+    assert(!probe.is_open());
+    SpreadsheetBook loaded;
+    assert(loaded.loadFromFile(path));
+    assert(loaded.sheets[0]->getCellText(0, 0) == "Hello");
+    assert(loaded.lastError().empty());
+
+    // Corrupt file: load fails AND says why
+    {
+        std::ofstream bad(path, std::ios::trunc);
+        bad << "{ this is not json !!!";
+    }
+    SpreadsheetBook badBook;
+    assert(!badBook.loadFromFile(path));
+    assert(!badBook.lastError().empty());
+
+    // Missing file: load fails AND says why
+    SpreadsheetBook missingBook;
+    assert(!missingBook.loadFromFile("no_such_file_xyz.sheet"));
+    assert(!missingBook.lastError().empty());
+
+    // Save into a missing directory fails (and reports it)
+    SpreadsheetBook book2;
+    assert(!book2.saveToFile("no_such_dir_xyz/out.sheet"));
+    assert(!book2.lastError().empty());
+
+    std::remove(path.c_str());
+    std::remove(tmpPath.c_str());
+    std::cout << "testAtomicSaveAndLoadErrors() PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=======================================" << std::endl;
     std::cout << "Running x-spreadsheet C++ Full Test Suite" << std::endl;
@@ -327,9 +510,14 @@ int main() {
     testBookAndCSV();
     testLocale();
     testPerformanceAndPrecision();
+    testFormulaPrecision();
+    testFormulaErrors();
+    testSortPreParsed();
+    testCsvSafety();
+    testAtomicSaveAndLoadErrors();
 
     std::cout << "=======================================" << std::endl;
-    std::cout << "ALL 11 TEST SUITES PASSED SUCCESSFULLY!" << std::endl;
+    std::cout << "ALL 16 TEST SUITES PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "=======================================" << std::endl;
     return 0;
 }

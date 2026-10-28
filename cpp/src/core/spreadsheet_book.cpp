@@ -87,29 +87,60 @@ bool SpreadsheetBook::saveToFile(const std::string& filepath) const {
     std::string tempPath = filepath + ".tmp";
     {
         std::ofstream out(tempPath, std::ios::out | std::ios::trunc);
-        if (!out.is_open()) return false;
+        if (!out.is_open()) {
+            lastError_ = "Cannot open temporary file for writing: " + tempPath;
+            return false;
+        }
         out << toJson().dump(2);
         out.flush();
-        if (!out.good()) return false;
+        if (!out.good()) {
+            lastError_ = "Failed to write workbook data (disk full?)";
+            std::error_code ec2;
+            std::filesystem::remove(tempPath, ec2);
+            return false;
+        }
     }
+    // Atomic on the same filesystem: the old file stays intact until the
+    // new one is complete, then the rename swaps it in one step.
     std::error_code ec;
     std::filesystem::rename(tempPath, filepath, ec);
     if (ec) {
-        std::filesystem::copy_file(tempPath, filepath, std::filesystem::copy_options::overwrite_existing, ec);
-        std::filesystem::remove(tempPath, ec);
+        // Rename can fail across filesystems; fall back to copy + delete.
+        ec.clear();
+        std::filesystem::copy_file(tempPath, filepath,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (!ec) {
+            std::error_code removeEc;
+            std::filesystem::remove(tempPath, removeEc);
+        }
     }
-    return !ec;
+    if (ec) {
+        lastError_ = "Failed to save file: " + filepath + " (" + ec.message() + ")";
+        return false;
+    }
+    lastError_.clear();
+    return true;
 }
 
 bool SpreadsheetBook::loadFromFile(const std::string& filepath) {
     std::ifstream in(filepath);
-    if (!in.is_open()) return false;
+    if (!in.is_open()) {
+        lastError_ = "Cannot open file: " + filepath;
+        return false;
+    }
     try {
         nlohmann::json j;
         in >> j;
         fromJson(j);
+        lastError_.clear();
         return true;
+    } catch (const nlohmann::json::exception& e) {
+        // e.what() carries the byte position, e.g. "parse error at line
+        // 1, column 5" — enough for the UI to tell the user what is wrong.
+        lastError_ = std::string("Invalid workbook file: ") + e.what();
+        return false;
     } catch (...) {
+        lastError_ = "Unknown error while loading file: " + filepath;
         return false;
     }
 }
@@ -125,6 +156,13 @@ std::string SpreadsheetBook::exportCsv(int sheetIdx) const {
     for (int r = 0; r <= maxR; ++r) {
         for (int c = 0; c <= maxC; ++c) {
             std::string text = sheet->getCellText(r, c);
+            // CSV injection: a cell starting with =, +, - or @ runs as a
+            // formula when the file is opened in Excel. Prefixing one
+            // single quote makes Excel treat it as plain text instead.
+            if (!text.empty() && (text[0] == '=' || text[0] == '+' ||
+                                  text[0] == '-' || text[0] == '@')) {
+                text = "'" + text;
+            }
             bool needQuotes = (text.find(',') != std::string::npos ||
                                text.find('"') != std::string::npos ||
                                text.find('\n') != std::string::npos);
@@ -152,16 +190,26 @@ bool SpreadsheetBook::importCsv(const std::string& csvContent, int sheetIdx) {
     auto& sheet = sheets[idx];
     sheet->pushHistoryState();
 
+    // Strip a UTF-8 byte-order mark if present, so it doesn't end up
+    // inside cell A1 (Excel writes one when it saves a CSV as UTF-8).
+    std::string body = csvContent;
+    if (body.size() >= 3 &&
+        static_cast<unsigned char>(body[0]) == 0xEF &&
+        static_cast<unsigned char>(body[1]) == 0xBB &&
+        static_cast<unsigned char>(body[2]) == 0xBF) {
+        body.erase(0, 3);
+    }
+
     int row = 0;
     int col = 0;
     std::string current;
     bool inQuotes = false;
 
-    for (size_t i = 0; i < csvContent.length(); ++i) {
-        char ch = csvContent[i];
+    for (size_t i = 0; i < body.length(); ++i) {
+        char ch = body[i];
         if (inQuotes) {
             if (ch == '"') {
-                if (i + 1 < csvContent.length() && csvContent[i + 1] == '"') {
+                if (i + 1 < body.length() && body[i + 1] == '"') {
                     current += '"';
                     ++i;
                 } else {
@@ -180,7 +228,7 @@ bool SpreadsheetBook::importCsv(const std::string& csvContent, int sheetIdx) {
                 current.clear();
                 ++col;
             } else if (ch == '\n' || ch == '\r') {
-                if (ch == '\r' && i + 1 < csvContent.length() && csvContent[i + 1] == '\n') {
+                if (ch == '\r' && i + 1 < body.length() && body[i + 1] == '\n') {
                     ++i;
                 }
                 if (row >= sheet->rows.len) sheet->rows.len = row + 50;

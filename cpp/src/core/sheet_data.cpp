@@ -507,21 +507,35 @@ void SheetData::resetAutoFilter() {
     if (autoFilter.sort) {
         int sortCi = autoFilter.sort->ci;
         bool asc = autoFilter.sort->asc();
-        std::vector<int> sortedF = fset;
-        std::sort(sortedF.begin(), sortedF.end(), [this, sortCi, asc](int a, int b) {
-            std::string va = this->getCellText(a, sortCi);
-            std::string vb = this->getCellText(b, sortCi);
-            double na = 0, nb = 0;
-            char* ea = nullptr; char* eb = nullptr;
-            na = std::strtod(va.c_str(), &ea);
-            nb = std::strtod(vb.c_str(), &eb);
-            bool isNumA = (ea != va.c_str() && *ea == '\0');
-            bool isNumB = (eb != vb.c_str() && *eb == '\0');
-            if (isNumA && isNumB) {
-                return asc ? (na < nb) : (na > nb);
+
+        // Decorate-sort-undecorate: parse each row's sort key ONCE, then
+        // sort the pre-parsed keys. The old code ran getCellText + strtod
+        // twice per comparison (about N log N parses for N rows).
+        struct SortKey {
+            int row;
+            bool isNum;
+            double num;
+            std::string text;
+        };
+        std::vector<SortKey> keys;
+        keys.reserve(fset.size());
+        for (int r : fset) {
+            std::string text = getCellText(r, sortCi);
+            double num = 0;
+            char* end = nullptr;
+            num = std::strtod(text.c_str(), &end);
+            bool isNum = (end != text.c_str() && *end == '\0');
+            keys.push_back({r, isNum, num, std::move(text)});
+        }
+        std::sort(keys.begin(), keys.end(), [asc](const SortKey& a, const SortKey& b) {
+            if (a.isNum && b.isNum) {
+                return asc ? (a.num < b.num) : (a.num > b.num);
             }
-            return asc ? (va < vb) : (va > vb);
+            return asc ? (a.text < b.text) : (a.text > b.text);
         });
+        std::vector<int> sortedF;
+        sortedF.reserve(keys.size());
+        for (const auto& k : keys) sortedF.push_back(k.row);
 
         sortedRowMap.clear();
         unsortedRowMap.clear();

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <sstream>
 #include <cmath>
+#include <format>
 #include <stack>
 #include <iostream>
 
@@ -15,6 +16,30 @@ static bool isNumeric(const std::string& str, double& outVal) {
     char* end = nullptr;
     outVal = std::strtod(str.c_str(), &end);
     return end != str.c_str() && *end == '\0';
+}
+
+// True for the error values this engine can produce ("#CIRC!", "#DIV/0!",
+// ...). Used so an error in a formula chain is passed on, not hidden.
+static bool isErrorText(const std::string& str) {
+    return str == "#CIRC!" || str == "#REF!" || str == "#DIV/0!" ||
+           str == "#VALUE!" || str == "#NAME?" || str == "#NUM!";
+}
+
+// Swallow an exponent (e5 / E-3 / e+10) into the number being scanned.
+// Called right after the digits of a number have been read, so "1e5" is
+// one number token (100000) instead of "1" followed by cell E5.
+static void consumeExponent(const std::string& expr, size_t& i, size_t n,
+                            std::string& num) {
+    if (i < n && (expr[i] == 'e' || expr[i] == 'E')) {
+        size_t j = i + 1;
+        if (j < n && (expr[j] == '+' || expr[j] == '-')) ++j;
+        if (j < n && std::isdigit(static_cast<unsigned char>(expr[j]))) {
+            while (i < j) num += expr[i++];
+            while (i < n && std::isdigit(static_cast<unsigned char>(expr[i]))) {
+                num += expr[i++];
+            }
+        }
+    }
 }
 
 static std::string trim(const std::string& s) {
@@ -102,6 +127,7 @@ std::vector<FormulaEngine::Token> FormulaEngine::tokenize(const std::string& exp
                     while (i < n && (std::isdigit(static_cast<unsigned char>(expr[i])) || expr[i] == '.')) {
                         num += expr[i++];
                     }
+                    consumeExponent(expr, i, n, num);
                     tokens.push_back({ Token::Number, num });
                     continue;
                 }
@@ -121,6 +147,7 @@ std::vector<FormulaEngine::Token> FormulaEngine::tokenize(const std::string& exp
             while (i < n && (std::isdigit(static_cast<unsigned char>(expr[i])) || expr[i] == '.')) {
                 num += expr[i++];
             }
+            consumeExponent(expr, i, n, num);
             tokens.push_back({ Token::Number, num });
             continue;
         }
@@ -271,16 +298,14 @@ std::vector<FormulaEngine::Token> FormulaEngine::toRPN(const std::vector<Token>&
     return output;
 }
 
+// 15 significant digits, like Excel. "{:.15g}" prints whole numbers
+// cleanly ("2500", not "2500.000000") and drops trailing zeros, so the old
+// long-long cast (and its overflow risk past 9.2e18) is gone entirely.
 static std::string formatDouble(double res) {
     if (std::isnan(res)) return "#NUM!";
     if (std::isinf(res)) return "#NUM!";
-    char buf[64];
-    if (std::fmod(res, 1.0) == 0.0 && std::abs(res) < 1e15) {
-        std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(res));
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.12g", res);
-    }
-    return std::string(buf);
+    if (res == 0.0) return "0"; // also normalises -0 to 0
+    return std::format("{:.15g}", res);
 }
 
 std::string FormulaEngine::evaluateRPN(const std::vector<Token>& rpn,
@@ -291,7 +316,12 @@ std::string FormulaEngine::evaluateRPN(const std::vector<Token>& rpn,
     auto resolveVal = [&](const std::string& item) -> std::string {
         int x = 0, y = 0;
         if (expr2xy(item, x, y)) {
-            if (visited.count({x, y}) || visited.size() > 64) return "#REF!";
+            // A cell already on the path back to this formula means the
+            // formula refers to itself, directly or through other cells.
+            if (visited.count({x, y})) return "#CIRC!";
+            // The size cap is a stack-overflow guard for very long (but
+            // not circular) chains, so it keeps the old #REF! code.
+            if (visited.size() > 64) return "#REF!";
             visited.insert({x, y});
             std::string cellRaw = lookup(x, y);
             std::string evaluated = eval(cellRaw, lookup, &visited);
@@ -302,22 +332,52 @@ std::string FormulaEngine::evaluateRPN(const std::vector<Token>& rpn,
     };
 
     for (const auto& token : rpn) {
-        if (token.type == Token::Number || token.type == Token::String) {
+        if (token.type == Token::Number) {
+            // Normalise the literal once, here: "1e5" becomes "100000"
+            // and "1.50" becomes "1.5", the way Excel shows them. Without
+            // this, a bare number formula would return its raw text.
+            double v = 0;
+            if (isNumeric(token.text, v)) {
+                stack.push_back(formatDouble(v));
+            } else {
+                stack.push_back(token.text);
+            }
+        } else if (token.type == Token::String) {
             stack.push_back(token.text);
         } else if (token.type == Token::CellRef) {
             stack.push_back(resolveVal(token.text));
         } else if (token.type == Token::Operator) {
             if (token.text == "u-") {
                 if (!stack.empty()) {
-                    double v = 0;
-                    isNumeric(stack.back(), v);
+                    std::string operand = stack.back();
                     stack.pop_back();
-                    stack.push_back(formatDouble(-v));
+                    // An error stays an error; text is not silently 0.
+                    if (isErrorText(operand)) {
+                        stack.push_back(operand);
+                    } else {
+                        double v = 0;
+                        if (isNumeric(operand, v)) {
+                            stack.push_back(formatDouble(-v));
+                        } else {
+                            stack.push_back("#VALUE!");
+                        }
+                    }
                 }
             } else {
                 if (stack.size() < 2) continue;
                 std::string rightStr = stack.back(); stack.pop_back();
                 std::string leftStr = stack.back(); stack.pop_back();
+
+                // An error in either side wins: show the real error
+                // instead of hiding it behind a new one.
+                if (isErrorText(leftStr)) {
+                    stack.push_back(leftStr);
+                    continue;
+                }
+                if (isErrorText(rightStr)) {
+                    stack.push_back(rightStr);
+                    continue;
+                }
 
                 double leftNum = 0, rightNum = 0;
                 bool leftIsNum = isNumeric(leftStr, leftNum);
@@ -327,7 +387,9 @@ std::string FormulaEngine::evaluateRPN(const std::vector<Token>& rpn,
                     if (leftIsNum && rightIsNum) {
                         stack.push_back(formatDouble(leftNum + rightNum));
                     } else {
-                        stack.push_back(leftStr + rightStr);
+                        // Like Excel, "+" never joins text; that is what
+                        // CONCAT is for. Text here is a mistake: #VALUE!
+                        stack.push_back("#VALUE!");
                     }
                 } else if (token.text == "-") {
                     if (leftIsNum && rightIsNum) {
@@ -342,10 +404,12 @@ std::string FormulaEngine::evaluateRPN(const std::vector<Token>& rpn,
                         stack.push_back("#VALUE!");
                     }
                 } else if (token.text == "/") {
-                    if (rightNum == 0) {
-                        stack.push_back("#DIV/0!");
-                    } else if (leftIsNum && rightIsNum) {
-                        stack.push_back(formatDouble(leftNum / rightNum));
+                    if (leftIsNum && rightIsNum) {
+                        if (rightNum == 0) {
+                            stack.push_back("#DIV/0!");
+                        } else {
+                            stack.push_back(formatDouble(leftNum / rightNum));
+                        }
                     } else {
                         stack.push_back("#VALUE!");
                     }
